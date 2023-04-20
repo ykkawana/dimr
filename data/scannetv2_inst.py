@@ -3,6 +3,7 @@ ScanNet v2 Dataloader (Modified from SparseConvNet Dataloader)
 Written by Li Jiang
 '''
 
+import copy
 import os, sys, glob, math, numpy as np
 import scipy.ndimage
 import scipy.interpolate
@@ -14,14 +15,21 @@ import tqdm
 
 sys.path.append('./')
 
-from util.config import cfg
-from util.log import logger
+# from util.config import cfg
+# from util.log import logger
 from util.bbox import BBoxUtils
 from util.consts import *
 from lib.pointgroup_ops.functions import pointgroup_ops
+import cv2
+import skimage.io
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(__file__)), 'external/milutils'))
+import milutils
+import pycocotools.mask
 
 BBox = BBoxUtils()
 
+FLIP = np.eye(4)
+FLIP[:3, :3] = np.array([[0, 0, -1], [-1, 0, 0], [0, 1, 0]])
 
 def read_txt(file):
     with open(file, 'r') as f:
@@ -29,7 +37,7 @@ def read_txt(file):
     return output
 
 class Dataset:
-    def __init__(self, test=False):
+    def __init__(self, cfg, test=False):
         #self.data_root = cfg.data_root
         self.dataset = cfg.dataset
         self.filename_suffix = cfg.filename_suffix
@@ -42,41 +50,53 @@ class Dataset:
         self.scale = cfg.scale # 50
         self.max_npoint = cfg.max_npoint
         self.mode = cfg.mode
+        self.datas = {}
 
         if test:
             self.batch_size = 1 # must be 1 !
             self.test_split = cfg.split  # val or test or train
             self.test_workers = cfg.test_workers
+        self.cfg = cfg
 
 
     def trainLoader(self):
-        self.train_files = read_txt(os.path.join('datasets/splits/', 'train.txt'))
+        # self.train_files = read_txt(os.path.join('datasets/splits/', 'train.txt'))
+        with open('dataset_sapien/intermediate/train_dimr_data.pkl', 'rb') as f:
+            self.datas['train'] = pickle.load(f)
+        self.train_files = list(self.datas['train'].keys())#[:32]
 
-        logger.info('Training samples: {}'.format(len(self.train_files)))
+        # logger.info('Training samples: {}'.format(len(self.train_files)))
 
-        train_set = list(range(len(self.train_files)))
-        self.train_data_loader = DataLoader(train_set, batch_size=self.batch_size, collate_fn=self.trainMerge, num_workers=self.train_workers,
+        self.train_set = list(range(len(self.train_files)))
+        self.train_data_loader = DataLoader(self.train_set, batch_size=self.batch_size, collate_fn=self.trainMerge, num_workers=self.train_workers,
                                             shuffle=True, sampler=None, drop_last=True, pin_memory=True)
 
 
     def valLoader(self):
-        self.val_files = read_txt(os.path.join('datasets/splits/', 'val.txt'))
+        # self.val_files = read_txt(os.path.join('datasets/splits/', 'val.txt'))
+        with open('dataset_sapien/intermediate/val_dimr_data.pkl', 'rb') as f:
+            self.datas['val'] = pickle.load(f)
+        self.val_files = list(self.datas['val'].keys())#[:32]
 
-        logger.info('Validation samples: {}'.format(len(self.val_files)))
+        # logger.info('Validation samples: {}'.format(len(self.val_files)))
 
-        val_set = list(range(len(self.val_files)))
-        self.val_data_loader = DataLoader(val_set, batch_size=self.batch_size, collate_fn=self.valMerge, num_workers=self.val_workers,
+        self.val_set = list(range(len(self.val_files)))
+        self.val_data_loader = DataLoader(self.val_set, batch_size=self.batch_size, collate_fn=self.valMerge, num_workers=self.val_workers,
                                           shuffle=False, drop_last=False, pin_memory=True)
 
 
     def testLoader(self):
-        self.test_files = read_txt(os.path.join('datasets/splits/', self.test_split + '.txt'))
+        # self.test_files = read_txt(os.path.join('datasets/splits/', self.test_split + '.txt'))
+        with open('dataset_sapien/intermediate/val_dimr_data.pkl', 'rb') as f:
+            # self.test_data = pickle.load(f)
+            self.datas['test'] = pickle.load(f)
+        self.test_files = list(self.datas['test'].keys())
 
-        logger.info('Testing samples ({}): {}'.format(self.test_split, len(self.test_files)))
+        # logger.info('Testing samples ({}): {}'.format(self.test_split, len(self.test_files)))
 
-        test_set = list(np.arange(len(self.test_files)))
+        self.test_set = list(np.arange(len(self.test_files)))
 
-        self.test_data_loader = DataLoader(test_set, batch_size=self.batch_size, collate_fn=self.testMerge, num_workers=self.test_workers,
+        self.test_data_loader = DataLoader(self.test_set, batch_size=self.batch_size, collate_fn=self.testMerge, num_workers=self.test_workers,
                                            shuffle=False, drop_last=False, pin_memory=True)
 
     #Elastic distortion
@@ -163,9 +183,12 @@ class Dataset:
         m = np.eye(3)
         if jitter:
             m += np.random.randn(3, 3) * 0.1
-        if flip:
-            m[0][0] *= np.random.randint(0, 2) * 2 - 1  # flip x randomly
-            boxes3D[:, 6] = np.sign(boxes3D[:, 6]) * np.pi - boxes3D[:, 6]
+        if flip and np.random.random() > 0.5:
+            m[0][0] *= -1  # flip x randomly
+            boxes3D[:, 6] = np.pi - boxes3D[:, 6]
+            boxes3D[:, 6] %= 2 * np.pi
+            # m[0][0] *= np.random.randint(0, 2) * 2 - 1  # flip x randomly
+            # boxes3D[:, 6] = np.sign(boxes3D[:, 6]) * np.pi - boxes3D[:, 6]
         if rot:
             theta = np.random.rand() * 2 * math.pi
             m = np.matmul(m, [[math.cos(theta), math.sin(theta), 0], [-math.sin(theta), math.cos(theta), 0], [0, 0, 1]])  # rotation
@@ -176,6 +199,26 @@ class Dataset:
         boxes3D[:, 0:3] = np.matmul(boxes3D[:, 0:3], m)
 
         return xyz, boxes3D
+
+    def colorAugment(self, rgb_color, mean_color=MEAN_COLOR_RGB_NORMALIZED):
+        rgb_color = rgb_color + mean_color
+        rgb_color *= (
+            1 + 0.4 * np.random.random(3) - 0.2
+        )  # brightness change for each channel
+        rgb_color += (
+            0.1 * np.random.random(3) - 0.05
+        )  # color shift for each channel
+        rgb_color += np.expand_dims(
+            (0.05 * np.random.random(rgb_color.shape[0]) - 0.025), -1
+        )  # jittering on each pixel
+        rgb_color = np.clip(rgb_color, 0, 1)
+        # randomly drop out 30% of the points' colors
+        rgb_color *= np.expand_dims(
+            np.random.random(rgb_color.shape[0]) > 0.3, -1
+        )
+        rgb_color = rgb_color - mean_color
+        return rgb_color
+
 
     def crop(self, xyz):
         '''
@@ -243,45 +286,144 @@ class Dataset:
             elif split == 'test':
                 scan_name = self.test_files[idx] # in fact, this is the same as val_files 
 
-            scan_data = np.load(f'datasets/scannet/processed_data/{scan_name}/data.npz')
+            # scan_data = np.load(f'datasets/scannet/processed_data/{scan_name}/data.npz')
+            # for k, v in scan_data.items():
+            #     print(k, v.shape)
+            scan_data = self.datas[split][scan_name]
+            depth_path = scan_data['depth_path']
+            maxm = int(os.path.basename(os.path.dirname(os.path.dirname(depth_path))).split('_max')[-1])
+            assert maxm == 12
+            # depth = np.ones((360, 640), dtype=np.uint16) * 2
+            depth = cv2.imread(depth_path,  cv2.IMREAD_ANYCOLOR | cv2.IMREAD_ANYDEPTH)
+            depth = depth.view(np.float16).astype(np.float32)
+            depth+=0.5
+            depth*=maxm
+            depth[depth > 100] = 100
+            # depth = augments.sharpen_depth(depth, th=cfg['data'].get('sharpen_depth_th', 0.001) * 0 + 0.1, scale=cfg['data'].get('sharpen_depth_scale', 1))
 
-            point_cloud = scan_data['mesh_vertices'].astype(np.float32)
+            mask = (0.4 <= depth) & (depth < 8)
+            mask = mask.reshape(-1)
+            K = scan_data['K']
+            pcd = milutils.geometry.get_pcd_from_depth(depth, K)
+            pcd = pcd[mask]
+            pcd[:, 1:] *= -1
+            color = skimage.io.imread(scan_data['color_path']).reshape(-1, 3)[mask]
+            pcd = trimesh.transform_points(pcd, scan_data['aug_mat'])
+            pcd = trimesh.transform_points(pcd, FLIP)
+            point_cloud = np.concatenate([pcd, color], 1)
+
+            # point_cloud = scan_data['mesh_vertices'].astype(np.float32)
             xyz_origin = point_cloud[:, 0:3]
-            rgb = (point_cloud[:, 3:] - MEAN_COLOR_RGB) / 256.0
+            rgb_origin = point_cloud[:, 3:6] / 255.0 - MEAN_COLOR_RGB_NORMALIZED
+            # rgb = (point_cloud[:, 3:6] - MEAN_COLOR_RGB) / 255.0
 
-            label = scan_data['semantic_labels'].astype(np.int32)
+            semantic_label = []
+            instance_label = []
+            for iidx, obj_id in enumerate(scan_data['instance']):
+                inst_data = scan_data['instance'][obj_id]
+                imask = pycocotools.mask.decode(inst_data['instance_mask_rle'])
+                inst_mask = imask.copy()
+                inst_mask[imask == 0] = 255
+                inst_mask[imask == 1] = iidx
+                instance_label.append(inst_mask)
+                cat_id = inst_data['cat_id']
+                # sem_mask = imask.copy()
+                sem_mask = imask.copy()
+                sem_mask[imask == 0] = 255
+                sem_mask[imask == 1] = cat_id
+                semantic_label.append(sem_mask)
+            instance_label = np.stack(instance_label, 0).min(0).reshape(-1)[mask] # bg is -1
+            semantic_label = np.stack(semantic_label, 0).min(0).reshape(-1)[mask] # bg is 255
+
+            # label = scan_data['semantic_labels'].astype(np.int32)
+            # label[label == 255] = -100 # ignore
+            label = semantic_label.astype(np.int32)
             label[label == 255] = -100 # ignore
 
-            instance_label = scan_data['instance_labels'].astype(np.int32) - 1
-            instance_label[instance_label == -1] = -100 # -100 == unannotated, instance id is 0-start
+            # instance_label = scan_data['instance_labels'].astype(np.int32) - 1
+            instance_label = instance_label.astype(np.int32)
+            instance_label[instance_label == 255] = -100 # -100 == unannotated, instance id is 0-start
 
             ### load zs, bbox, find correponding with instance_labels
-            zs = np.load(f'datasets/bsp/zs/{scan_name}/zs.npz')['zs'] # [nInst, 256] mean + logvar
+            zs = np.load(os.path.join(self.cfg.bsp_root, f'{scan_name[0]}_{scan_name[1]:02d}/zs{self.cfg.zs_suffix}.npz'))['zs'] # [nInst, 256] mean + logvar
+            # print('zs', zs.shape)
 
-            ### load bbox
-            with open(f'datasets/scannet/processed_data/{scan_name}/bbox.pkl', 'rb') as f:
-                bbox_info = pickle.load(f)
+            # ### load bbox
+            # with open(f'datasets/scannet/processed_data/{scan_name}/bbox.pkl', 'rb') as f:
+            #     bbox_info = pickle.load(f)
             
             bbox2inst = []
             bboxes = []
             bbox_labels = []
             shapenet_catids = []
             shapenet_ids = []
-            for item in bbox_info:
-                bbox2inst.append(item['instance_id'] - 1) # pointgoup instance is 0-start, while scannet original is 1-start.
-                bboxes.append(item['box3D'])
-                bbox_labels.append(BBox.shapenetid2class[item['cls_id']])
-                shapenet_catids.append(item['shapenet_catid'])
-                shapenet_ids.append(item['shapenet_id'])
+            # for item in bbox_info:
+            #     bbox2inst.append(item['instance_id'] - 1) # pointgoup instance is 0-start, while scannet original is 1-start.
+            #     bboxes.append(item['box3D'])
+            #     bbox_labels.append(BBox.shapenetid2class[item['cls_id']])
+            #     shapenet_catids.append(item['shapenet_catid'])
+            #     shapenet_ids.append(item['shapenet_id'])
+            for iidx, obj_id in enumerate(scan_data['instance']):
+                inst_data = scan_data['instance'][obj_id]
+                bbox2inst.append(iidx)
+                center = inst_data['center']
+                # Flip axis with 3x3 matrix (FLIP)
+                center = np.dot(FLIP[:3, :3], center)
+                size = inst_data['size']
+                size = np.dot(np.abs(FLIP[:3, :3]), size)
+                angle = inst_data['theta']
+                box3d = np.concatenate([center, size, [angle]])
+                bboxes.append(box3d)
+                cat_id = inst_data['cat_id']
+                bbox_labels.append(BBox.shapenetid2class[cat_id])
+                shapenet_catids.append(f'{cat_id:04d}')
+                shapenet_ids.append(f'{scan_name[0]}_{scan_name[1]:02d}_{obj_id:02d}')
+
+            # print('bbox2inst', len(bbox2inst))
+            # print(bbox2inst)
+            # print('bboxes', len(bboxes))
+            # print(bboxes)
+            # print('bbox_labels', len(bbox_labels))
+            # print(bbox_labels)
+            # print('shapenet_catids', len(shapenet_catids))
+            # print(shapenet_catids)
+            # print('shapenet_ids', len(shapenet_ids))
+            # print(shapenet_ids)
+
 
             bboxes = np.stack(bboxes, axis=0)
+            original = bboxes.copy()
             bbox_labels = np.stack(bbox_labels, axis=0)
+
+            scan_data = dict(
+                bboxes=bboxes,
+                point_cloud=point_cloud,
+                instance_label=instance_label,
+                label=label,
+            )
+            # np.savez(f'dump_{scan_name[0]}_{scan_name[1]:02d}.npz', **scan_data)
+            # assert False
+
+
+            # print('bboxes', bboxes.shape)
+            # print('bbox_labels', bbox_labels.shape)
+
 
             ### jitter / flip x / rotation
             if augment:
-                xyz_middle, bboxes = self.dataAugment(xyz_origin, bboxes)
+                xyz_middle, bboxes = self.dataAugment(xyz_origin, bboxes)#, jitter=False)
+                if self.cfg.use_rgb:
+                    rgb = self.colorAugment(rgb_origin)
+                else:
+                    rgb = rgb_origin
             else:
                 xyz_middle = xyz_origin
+                rgb = rgb_origin
+            rgb_origin = rgb_origin.astype(np.float32)
+            rgb = rgb.astype(np.float32)
+            # if augment:
+            #     np.savez(f'aug_dump_{scan_name[0]}_{scan_name[1]:02d}.npz', **scan_data, xyz_middle=xyz_middle, xyz_origin=xyz_origin, aug_bboxes=bboxes, original_bboxes=original)
+            #     assert False
 
             ### scale
             xyz = xyz_middle * self.scale
@@ -320,7 +462,8 @@ class Dataset:
             total_inst_num += inst_num
 
             ### get gt instance meshes
-            if split == 'test' and cfg.eval:
+            if split == 'test' and self.cfg.eval:
+                assert False
                 meshes = []
                 for mesh_id in range(len(inst_shapenet_catids)):
                     
@@ -338,7 +481,8 @@ class Dataset:
                     points = mesh.vertices
 
                     # swap axes 
-                    transform_m = np.array([[0, 0, -1], [-1, 0, 0], [0, 1, 0]])
+                    # transform_m = np.array([[0, 0, -1], [-1, 0, 0], [0, 1, 0]])
+                    transform_m = FLIP
                     points = points.dot(transform_m.T)
 
                     # recenter + rescale

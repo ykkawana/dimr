@@ -2,7 +2,7 @@ import torch, glob, os, numpy as np
 import sys
 sys.path.append('../')
 
-from util.log import logger
+# from util.log import logger
 
 class AverageMeter(object):
     """Computes and stores the average and current value"""
@@ -27,6 +27,7 @@ def step_learning_rate(optimizer, base_lr, epoch, step_epoch, multiplier=0.1, cl
     lr = max(base_lr * (multiplier ** (epoch / step_epoch)), clip)
     for param_group in optimizer.param_groups:
         param_group['lr'] = lr
+    return lr
 
 
 def intersectionAndUnion(output, target, K, ignore_index=255):
@@ -58,7 +59,8 @@ def checkpoint_restore(model, exp_path, exp_name, use_cuda=True, epoch=0, dist=F
                 epoch = int(f[len(exp_path) + len(exp_name) + 2 : -4])
 
     if len(f) > 0:
-        logger.info('Restore from ' + f)
+        print('Restore from ' + f)
+        # logger.info('Restore from ' + f)
         checkpoint = torch.load(f)
         for k, v in checkpoint.items():
             if 'module.' in k:
@@ -85,7 +87,8 @@ def is_multiple(num, multiple):
 
 def checkpoint_save(model, exp_path, exp_name, epoch, save_freq=16, use_cuda=True):
     f = os.path.join(exp_path, exp_name + '-%09d'%epoch + '.pth')
-    logger.info('Saving ' + f)
+    print('Saving ' + f)
+    # logger.info('Saving ' + f)
     model.cpu()
     torch.save(model.state_dict(), f)
     if use_cuda:

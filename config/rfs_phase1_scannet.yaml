@@ -1,6 +1,6 @@
 GENERAL:
   task: train  # train, test
-  manual_seed: 123
+  manual_seed: 0
   model_dir: model/rfs.py
   dataset_dir: data/scannetv2_inst.py
 
@@ -31,7 +31,8 @@ TRAIN:
   epochs: 256
   train_workers: 4 # data loader workers
   optim: Adam # Adam or SGD
-  lr: 0.001
+  lr: 0.006 # Using 6 gpus
+  # lr: 0.001
   step_epoch: 256
   multiplier: 0.1
   momentum: 0.9

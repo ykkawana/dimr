@@ -225,14 +225,15 @@ class CompNet(nn.Module):
         self.generator = generator(args.num_planes, args.num_convexes)
     
         ### load gt zs and gt meshes.
-        self.db = np.load(os.path.join('datasets/bsp/', 'database_scannet.npz'))
+        self.db = np.load(os.path.join(args.bsp_base, 'database_scannet.npz'))
+        # self.db = np.load(os.path.join('datasets/bsp/', 'database_scannet.npz'))
         self.shapenet_path = "datasets/ShapeNetv2_data/watertight_scaled_simplified/"
 
         # build KDTree
         self.kdtrees = {}
         self.gtzs = {}
         self.gtnames = {}
-        for lbl in range(8):
+        for lbl in range(args.num_classes):
             mask = self.db['lbls'] == lbl
             X = self.db['zs'][mask, :]
             self.gtzs[lbl] = X

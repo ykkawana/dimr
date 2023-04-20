@@ -6,7 +6,8 @@ Hierarchichal Aggregation Algorithm
 #define HIERARCHICAL_AGGREGATION_H
 #include <torch/serialize/tensor.h>
 #include <ATen/cuda/CUDAContext.h>
-#include <THC/THC.h>
+// #include <THC/THC.h>
+#include <ATen/ATen.h>
 
 #include "../datatype/datatype.h"
 

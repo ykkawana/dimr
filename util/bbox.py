@@ -2,23 +2,36 @@
 import numpy as np
 import torch
 
-SHAPENETCLASSES = ['void',
-                   'table', 'jar', 'skateboard', 'car', 'bottle',
-                   'tower', 
-                   'chair', 
-                   'bookshelf',
-                    'camera', 'airplane',
-                   'laptop', 'basket', 'sofa', 'knife', 'can',
-                   'rifle', 'train', 'pillow', 'lamp', 'trash_bin',
-                   'mailbox', 'watercraft', 'motorbike', 'dishwasher', 'bench',
-                   'pistol', 'rocket', 'loudspeaker', 'file cabinet', 'bag',
-                   'cabinet', 'bed', 'birdhouse', 'display', 'piano',
-                   'earphone', 'telephone', 'stove', 'microphone', 'bus',
-                   'mug', 'remote', 'bathtub', 'bowl', 'keyboard',
-                   'guitar', 'washer', 'bicycle', 'faucet', 'printer',
-                   'cap', 'clock', 'helmet', 'flowerpot', 'microwaves']
+# SHAPENETCLASSES = ['void',
+#                    'table', 'jar', 'skateboard', 'car', 'bottle',
+#                    'tower', 
+#                    'chair', 
+#                    'bookshelf',
+#                     'camera', 'airplane',
+#                    'laptop', 'basket', 'sofa', 'knife', 'can',
+#                    'rifle', 'train', 'pillow', 'lamp', 'trash_bin',
+#                    'mailbox', 'watercraft', 'motorbike', 'dishwasher', 'bench',
+#                    'pistol', 'rocket', 'loudspeaker', 'file cabinet', 'bag',
+#                    'cabinet', 'bed', 'birdhouse', 'display', 'piano',
+#                    'earphone', 'telephone', 'stove', 'microphone', 'bus',
+#                    'mug', 'remote', 'bathtub', 'bowl', 'keyboard',
+#                    'guitar', 'washer', 'bicycle', 'faucet', 'printer',
+#                    'cap', 'clock', 'helmet', 'flowerpot', 'microwaves']
 
-OBJ_CLASS_IDS = np.array([ 1,  7,  8, 13, 20, 31, 34, 43])                   
+# OBJ_CLASS_IDS = np.array([ 1,  7,  8, 13, 20, 31, 34, 43])                   
+SHAPENETCLASSES = [
+    'dishwasher',
+    'trashcan',
+    'safe',
+    'oven',
+    'storagefurniture',
+    'table',
+    'microwave',
+    'refrigerator',
+    'washingmachine',
+    'box',
+]
+OBJ_CLASS_IDS = np.arange(len(SHAPENETCLASSES))
 
 class BBoxUtils(object):
     def __init__(self):
@@ -30,15 +43,25 @@ class BBoxUtils(object):
         self.class2type = {self.type2class[t]: t for t in self.type2class}
         self.class_ids = OBJ_CLASS_IDS
         self.shapenetid2class = {class_id: i for i, class_id in enumerate(list(self.class_ids))}
-        self.mean_size_arr = np.array([[0.72613623, 1.24456995, 0.66353637],
-                                       [0.57895266, 0.55146825, 0.84949912],
-                                       [0.33791219, 1.06731947, 1.33759765],
-                                       [0.89405706, 1.69241158, 0.76549946],
-                                       [0.27877716, 0.36634103, 0.45592777],
-                                       [0.56651502, 0.96013238, 1.00018008],
-                                       [0.16438198, 0.6067032 , 0.47594247],
-                                       [0.51612009, 0.85305383, 0.43925024]]
-                                       )
+        # self.mean_size_arr = np.array([[0.72613623, 1.24456995, 0.66353637],
+        #                                [0.57895266, 0.55146825, 0.84949912],
+        #                                [0.33791219, 1.06731947, 1.33759765],
+        #                                [0.89405706, 1.69241158, 0.76549946],
+        #                                [0.27877716, 0.36634103, 0.45592777],
+        #                                [0.56651502, 0.96013238, 1.00018008],
+        #                                [0.16438198, 0.6067032 , 0.47594247],
+        #                                [0.51612009, 0.85305383, 0.43925024]]
+        #                                )
+        self.mean_size_arr = np.array([[1.26580213, 0.76726663, 1.01996341],
+                                       [0.78431588, 0.59471757, 1.18925634],
+                                       [1.3907531 , 0.97284831, 0.8981399 ],
+                                       [1.10347322, 0.95666493, 1.06861853],
+                                       [1.74675279, 1.26988383, 1.16398469],
+                                       [1.43044578, 1.0515064 , 1.04773336],
+                                       [0.84654831, 0.74456573, 0.43598743],
+                                       [0.92148132, 0.70875965, 1.26466338],
+                                       [1.13231177, 0.86180365, 1.2173349 ],
+                                       [0.99544064, 0.93191583, 1.35634151]])
         self.type_mean_size = {}
         for i in range(self.num_size_cluster):
             self.type_mean_size[self.class2type[i]] = self.mean_size_arr[i, :]

@@ -1,14 +1,25 @@
+import os
+os.environ['OPENCV_IO_ENABLE_OPENEXR'] = "1"
 import open3d as o3d
+import dotenv
+dotenv.load_dotenv()
+DEBUG = os.getenv('DEBUG', '0') == '1'
 
 import torch
 import torch.optim as optim
 import time, sys, os, random
 from tensorboardX import SummaryWriter
 import numpy as np
+import wandb
 
 from util.config import cfg
+# from util import config
+# cfg = config.get_parser()
+# cfg.exp_path =  os.path.join(f'{cfg.exp_root}/exp', cfg.dataset, cfg.model_name, cfg.config.split('/')[-1][:-5])
 from util.log import logger
 import util.utils as utils
+# import wandb
+
 
 def init():
     # copy important files to backup
@@ -31,6 +42,9 @@ def init():
     np.random.seed(cfg.manual_seed)
     torch.manual_seed(cfg.manual_seed)
     torch.cuda.manual_seed_all(cfg.manual_seed)
+    wandb.init(config=cfg)
+
+    # wandb.init(sync_tensorboard=True)
 
 def train_epoch(train_loader, model, model_fn, optimizer, epoch):
     iter_time = utils.AverageMeter()
@@ -87,6 +101,19 @@ def train_epoch(train_loader, model, model_fn, optimizer, epoch):
                 am_dict['angle_residual_loss'].avg,
                 remain_time=remain_time)
             )
+            if (current_iter + 1) % 10 == 0:
+                log = {
+                    'loss': am_dict['loss'].val,
+                    'semantic_loss': am_dict['semantic_loss'].val,
+                    'offset_norm_loss': am_dict['offset_norm_loss'].val,
+                    'offset_dir_loss': am_dict['offset_dir_loss'].val,
+                    'angle_label_loss': am_dict['angle_label_loss'].val,
+                    'angle_residual_loss': am_dict['angle_residual_loss'].val,
+                    'epoch': epoch,
+                    'lr': optimizer.param_groups[0]['lr'],
+                }
+                log = {f'train/{k}': v for k, v in log.items()}
+                wandb.log(log)
         elif epoch <= cfg.prepare_epochs_2:
             sys.stdout.write(
                 "{} / {} | L: {:.4f} lr:{:.6f} | sem: {:.4f} off: {:.4f}/{:.4f} ang:{:.4f}/{:.4f} | score: {:.4f} | T: {remain_time}\n".format
@@ -101,6 +128,20 @@ def train_epoch(train_loader, model, model_fn, optimizer, epoch):
                 am_dict['score_loss'].avg,
                 remain_time=remain_time)
             )
+            if (current_iter + 1) % 10 == 0:
+                log = {
+                    'loss': am_dict['loss'].val,
+                    'semantic_loss': am_dict['semantic_loss'].val,
+                    'offset_norm_loss': am_dict['offset_norm_loss'].val,
+                    'offset_dir_loss': am_dict['offset_dir_loss'].val,
+                    'angle_label_loss': am_dict['angle_label_loss'].val,
+                    'angle_residual_loss': am_dict['angle_residual_loss'].val,
+                    'score_loss': am_dict['score_loss'].val,
+                    'epoch': epoch,
+                    'lr': optimizer.param_groups[0]['lr'],
+                }
+                log = {f'train/{k}': v for k, v in log.items()}
+                wandb.log(log)
         else:
             sys.stdout.write(
                 "{} / {} | L: {:.4f} lr:{:.6f} | sem: {:.4f} off: {:.4f}/{:.4f} ang:{:.4f}/{:.4f} | score: {:.4f} | z: {:.4f} center: {:.4f} scale: {:.4f} | T: {remain_time}\n".format
@@ -118,7 +159,27 @@ def train_epoch(train_loader, model, model_fn, optimizer, epoch):
                 am_dict['scale_loss'].avg,
                 remain_time=remain_time)
             )
+            if (current_iter + 1) % 10 == 0:
+                log = {
+                    'loss': am_dict['loss'].val,
+                    'semantic_loss': am_dict['semantic_loss'].val,
+                    'offset_norm_loss': am_dict['offset_norm_loss'].val,
+                    'offset_dir_loss': am_dict['offset_dir_loss'].val,
+                    'angle_label_loss': am_dict['angle_label_loss'].val,
+                    'angle_residual_loss': am_dict['angle_residual_loss'].val,
+                    'score_loss': am_dict['score_loss'].val,
+                    'z_loss': am_dict['z_loss'].val,
+                    'center_loss': am_dict['center_loss'].val,
+                    'scale_loss': am_dict['scale_loss'].val,
+                    'epoch': epoch,
+                    'lr': optimizer.param_groups[0]['lr'],
+                }
+                log = {f'train/{k}': v for k, v in log.items()}
+                wandb.log(log)
         if (i == len(train_loader) - 1): print()
+        if DEBUG:
+            if i > 100:
+                break
 
 
     logger.info("epoch: {}/{}, train loss: {:.4f}, time: {}s".format(epoch, cfg.epochs, am_dict['loss'].avg, time.time() - start_epoch))
@@ -151,6 +212,9 @@ def eval_epoch(val_loader, model, model_fn, epoch):
             ##### print
             sys.stdout.write("\riter: {}/{} loss: {:.4f}({:.4f})".format(i + 1, len(val_loader), am_dict['loss'].val, am_dict['loss'].avg))
             if (i == len(val_loader) - 1): print()
+        log = {f'test/{k}': v.avg for k, v in am_dict.items() if k.endswith('loss')}
+        log['epoch'] = epoch
+        wandb.log(log)
 
         logger.info("epoch: {}/{}, val loss: {:.4f}, time: {}s".format(epoch, cfg.epochs, am_dict['loss'].avg, time.time() - start_epoch))
 

@@ -1,5 +1,6 @@
 # must import open3d before pytorch.
 import os
+import glob
 import sys
 import trimesh
 from util.icp import icp
@@ -10,8 +11,10 @@ import pyquaternion
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-import spconv
-from spconv.modules import SparseModule
+# import spconv
+# from spconv.modules import SparseModule
+import spconv.pytorch as spconv
+from spconv.pytorch.modules import SparseModule
 import functools
 from collections import OrderedDict
 
@@ -75,7 +78,8 @@ class ResidualBlock(SparseModule):
         identity = spconv.SparseConvTensor(input.features, input.indices, input.spatial_shape, input.batch_size)
 
         output = self.conv_branch(input)
-        output.features += self.i_branch(identity).features
+        # output.features += self.i_branch(identity).features
+        output = output.replace_feature(output.features + self.i_branch(identity).features)
 
         return output
 
@@ -140,7 +144,8 @@ class UBlock(nn.Module):
             output_decoder = self.u(output_decoder)
             output_decoder = self.deconv(output_decoder)
 
-            output.features = torch.cat((identity.features, output_decoder.features), dim=1)
+            # output.features = torch.cat((identity.features, output_decoder.features), dim=1)
+            output = output.replace_feature(torch.cat((identity.features, output_decoder.features), dim=1))
 
             output = self.blocks_tail(output)
 
@@ -156,6 +161,7 @@ class RfSNet(nn.Module):
         block_reps = cfg.block_reps
         block_residual = cfg.block_residual
 
+        self.num_cad_classes = cfg.num_cad_classes
         self.cluster_radius = cfg.cluster_radius
         self.cluster_meanActive = cfg.cluster_meanActive
         self.cluster_shift_meanActive = cfg.cluster_shift_meanActive
@@ -267,14 +273,15 @@ class RfSNet(nn.Module):
                 param.requires_grad = False
 
         #### load pretrain weights
-        if self.pretrain_path is not None:
+        if self.pretrain_path is not None and self.pretrain_path != 'None':
             pretrain_dict = torch.load(self.pretrain_path)
             for m in self.pretrain_module:
                 print("Loaded pretrained " + m + ": %d/%d" % utils.load_model_param(module_map[m], pretrain_dict, prefix=m))
         
         ### BSP Net
+        bsp_base = os.path.dirname(os.path.dirname(cfg.bsp_root))
         bsp_args = AttributeDict({
-            'num_classes': 8,
+            'num_classes': self.num_cad_classes, 
             'mise_resolution_0': 32, # for evaluation
             'mise_upsampling_steps': 0, # for evaluation
             'mise_threshold': 0.5, # bsp assume occ in [0, 1] (not applying sigmoid!)
@@ -283,6 +290,7 @@ class RfSNet(nn.Module):
             'num_feats': 32,
             'mesh_gen': 'bspt', # 'bspt' or 'mcubes'
             'sample': cfg.sample,
+            'bsp_base': bsp_base
         })
         self.comp_net = CompNet(bsp_args)
 
@@ -292,6 +300,9 @@ class RfSNet(nn.Module):
         
         ### load pretrained bsp net
         bsp_pretrain_dict = torch.load(os.path.join('datasets/bsp', 'model.pth'))
+        wpath = sorted(glob.glob(os.path.join(bsp_base, 'checkpoints', '*.pth.tar')))[-1]
+        print('load', wpath)
+        bsp_pretrain_dict = torch.load(wpath)
         self.comp_net.load_state_dict(bsp_pretrain_dict, strict=False)
         print(f"Loaded pretrained BSP-Net: #params = {sum([p.numel() for p in self.comp_net.parameters()])}")
 
@@ -419,8 +430,8 @@ class RfSNet(nn.Module):
         semantic_preds = semantic_scores.max(1)[1]    # (N), long
 
         semantic_preds_CAD = torch.from_numpy(RFS2CAD_arr[semantic_preds.cpu()]).long().cuda()
-        semantic_preds_CAD[semantic_preds_CAD == -1] = 8
-        semantic_scores_CAD = F.one_hot(semantic_preds_CAD, 9).float()
+        semantic_preds_CAD[semantic_preds_CAD == -1] = self.num_cad_classes
+        semantic_scores_CAD = F.one_hot(semantic_preds_CAD, self.num_cad_classes + 1).float()
 
         ret['semantic_scores'] = semantic_scores
         ret['semantic_scores_CAD'] = semantic_scores_CAD
@@ -436,14 +447,14 @@ class RfSNet(nn.Module):
         pt_angles = self.angle_linear(pt_angles_feats) # (N, 24) float32
 
         ### mask non-CAD instances' pt_angles to 0.
-        angle_mask = (semantic_preds_CAD != 8).to(semantic_preds.device).float()
+        angle_mask = (semantic_preds_CAD != self.num_cad_classes).to(semantic_preds.device).float()
         pt_angles = pt_angles * angle_mask.unsqueeze(-1)
 
         ret['pt_angles'] = pt_angles
 
         if epoch > self.prepare_epochs:
             #### get prooposal clusters
-            object_idxs = torch.nonzero(semantic_preds_CAD != 8).view(-1) # only get CAD objects, mask out floor and wall and non-CADs.
+            object_idxs = torch.nonzero(semantic_preds_CAD != self.num_cad_classes).view(-1) # only get CAD objects, mask out floor and wall and non-CADs.
 
             batch_idxs_ = batch_idxs[object_idxs]
             batch_offsets_ = utils.get_batch_offsets(batch_idxs_, input.batch_size)
@@ -591,9 +602,9 @@ def nn_distance(pc1, pc2, l1smooth=False, delta=1.0, l1=False):
     dist2, idx2 = torch.min(pc_dist, dim=1) # (B,M)
     return dist1, idx1, dist2, idx2    
 
-def model_fn_decorator(test=False):
+def model_fn_decorator(cfg, test=False):
     #### config
-    from util.config import cfg
+    # from util.config import cfg
 
     #### criterion
     semantic_criterion = nn.CrossEntropyLoss(ignore_index=cfg.ignore_label).cuda()
@@ -942,6 +953,8 @@ def model_fn_decorator(test=False):
 
         angle_label_loss = label_criterion(angle_label, gt_angle_label)
         angle_label_loss = (angle_label_loss * pt_valid).sum() / (pt_valid.sum() + 1e-6)
+        if hasattr(cfg, 'angle_label_loss_weight'):
+            angle_label_loss = cfg.angle_label_loss_weight * angle_label_loss
 
         gt_angle_label_onehot = F.one_hot(gt_angle_label, 12).float()
         angle_residual = (angle_residual * gt_angle_label_onehot).sum(1) # [nProp, 12] --> [nProp, ]

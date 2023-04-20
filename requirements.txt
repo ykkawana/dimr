@@ -1,11 +1,11 @@
-torch
+# torch
 open3d
 plyfile
-tensorboardX
+# tensorboardX
 scipy
-numpy
+# numpy
 Shapely
 pandas
 pyMCubes
-maplotlib
+matplotlib
 trimesh
