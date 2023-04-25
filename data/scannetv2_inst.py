@@ -22,9 +22,30 @@ from util.consts import *
 from lib.pointgroup_ops.functions import pointgroup_ops
 import cv2
 import skimage.io
-sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(__file__)), 'external/milutils'))
-import milutils
+# sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(__file__)), 'external/milutils'))
+# import milutils
 import pycocotools.mask
+from numba import njit
+
+def get_pcd_from_depth(depth, K):
+    rows, cols = depth.shape
+    fx = K[0, 0]
+    fy = K[1, 1]
+    cx = K[0, 2]
+    cy = K[1, 2]
+    c, r = np.meshgrid(np.arange(cols), np.arange(rows))
+    # c = c.astype(np.float64)
+    # r = r.astype(np.float64)
+    return depth_cam_to_pcd(depth, c, r, fx, fy, cx, cy)
+
+@njit
+def depth_cam_to_pcd(depth, c, r, fx, fy, cx, cy):
+# def depth_cam_to_pcd(depth: np.float64, c: np.int64, r: np.int64, fx: np.float64, fy: np.float64, cx: np.float64, cy: np.float64):
+    z = depth
+    x = z * (c - cx) / fx
+    y = z * (r - cy) / fy
+    return np.dstack((x, y, z)).reshape(-1, 3)
+
 
 BBox = BBoxUtils()
 
@@ -50,6 +71,7 @@ class Dataset:
         self.scale = cfg.scale # 50
         self.max_npoint = cfg.max_npoint
         self.mode = cfg.mode
+        self.apply_max_points_limit = False if not hasattr(cfg, 'apply_max_points_limit') else cfg.apply_max_points_limit
         self.datas = {}
 
         if test:
@@ -304,13 +326,22 @@ class Dataset:
             mask = (0.4 <= depth) & (depth < 8)
             mask = mask.reshape(-1)
             K = scan_data['K']
-            pcd = milutils.geometry.get_pcd_from_depth(depth, K)
+            pcd =get_pcd_from_depth(depth, K)
+            # pcd = milutils.geometry.get_pcd_from_depth(depth, K)
             pcd = pcd[mask]
             pcd[:, 1:] *= -1
             color = skimage.io.imread(scan_data['color_path']).reshape(-1, 3)[mask]
             pcd = trimesh.transform_points(pcd, scan_data['aug_mat'])
             pcd = trimesh.transform_points(pcd, FLIP)
             point_cloud = np.concatenate([pcd, color], 1)
+
+            choices = None
+            # self.max_npoint = 125000
+            if len(point_cloud) > self.max_npoint and self.apply_max_points_limit:
+                choices = np.random.choice(point_cloud.shape[0], self.max_npoint, replace=False)
+                point_cloud = point_cloud[choices]
+            assert len(point_cloud) <= 250000
+            # print(len(point_cloud))
 
             # point_cloud = scan_data['mesh_vertices'].astype(np.float32)
             xyz_origin = point_cloud[:, 0:3]
@@ -334,6 +365,10 @@ class Dataset:
                 semantic_label.append(sem_mask)
             instance_label = np.stack(instance_label, 0).min(0).reshape(-1)[mask] # bg is -1
             semantic_label = np.stack(semantic_label, 0).min(0).reshape(-1)[mask] # bg is 255
+            if choices is not None:
+                instance_label = instance_label[choices]
+                semantic_label = semantic_label[choices]
+
 
             # label = scan_data['semantic_labels'].astype(np.int32)
             # label[label == 255] = -100 # ignore

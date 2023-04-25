@@ -3,6 +3,7 @@ os.environ['OPENCV_IO_ENABLE_OPENEXR'] = "1"
 import pytorch_lightning as pl
 # import open3d as o3d
 import dotenv
+import glob
 dotenv.load_dotenv()
 DEBUG = os.getenv('DEBUG', '0') == '1'
 import datetime
@@ -31,6 +32,9 @@ from model.rfs import model_fn_decorator
 
 from pytorch_lightning.strategies.launchers.multiprocessing import _is_forking_disabled
 print(torch.cuda.device_count(), torch.multiprocessing.get_all_start_methods(), _is_forking_disabled())
+if os.getenv('NO_WANDB', '0') == '0' and cfg.run_id is not None:
+    import wandb
+
 # pl.seed_everything(12345)
 
 
@@ -88,6 +92,7 @@ class PLModelWrapper(pl.LightningModule):
         return loss
 
     def training_step(self, batch, batch_idx):
+        # torch.cuda.empty_cache()
         return self._common_step(batch, batch_idx, "train")
 
     # def training_epoch_end(self, train_step_outputs):
@@ -121,12 +126,24 @@ class PLDataModule(pl.LightningDataModule):
 if __name__ == '__main__':
     ##### init
     # init()
+    checkpoint_path = None
+    # cfg.batch_size = 16
+    if cfg.run_id is not None:
+        assert hasattr(cfg, 'default_root_dir')
+        original_ch_dir =  os.path.join(cfg.default_root_dir, 'checkpoints')
+        checkpoints = sorted(glob.glob(os.path.join(original_ch_dir, 'latest-*.ckpt')))
+        if len(checkpoints) > 0:
+            print("Resume pl from", checkpoints[-1])
+            checkpoint_path = checkpoints[-1]
     pl.seed_everything(cfg.manual_seed)
     dirname = str(datetime.datetime.now()).split(".")[0].replace(" ", "-").replace(":", "-")+"-"+str(uuid.uuid4())[:8]
     default_root_dir = os.path.join(cfg.exp_root, dirname)
     cfg.default_root_dir = default_root_dir
-    ch_dir=  os.path.join(default_root_dir, 'checkpoints')
+    ch_dir =  os.path.join(default_root_dir, 'checkpoints')
     os.makedirs(ch_dir, exist_ok=True)
+    # cfg.batch_size = 2
+
+
     # val_metric_checkpoint = ModelCheckpoint(
     #     monitor='val/loss',
     #     dirpath=ch_dir,
@@ -173,15 +190,30 @@ if __name__ == '__main__':
         save_on_train_epoch_end=True,
         mode="max",
     )
+    if os.getenv("NO_WANDB", "0") == "1":
+        assert cfg.run_id is None
+        wandb_logger = None
+    else:
+        if cfg.resume_with_wandb_run_id:
+            run_id = cfg.run_id.split('/')[-1]
+            resume = 'must'
+        else:
+            run_id = None
+            resume = None
 
-    wandb_logger = WandbLogger(
-        project=os.environ['WANDB_PROJECT']
-    )
+        wandb_logger = WandbLogger(
+            project=os.environ['WANDB_PROJECT'],
+            id=run_id,
+            resume=resume,
+        )
     ngpus = len(os.getenv('CUDA_VISIBLE_DEVICES', '0').split(','))
     strategy = "ddp" if ngpus > 1 else None
     # strategy = "deepspeed_stage_2"
     # strategy = "fsdp"
-    # accumulate_grad_batches = cfg['train_cfg'].get('accumulate_grad_batches', 1)
+    if hasattr(cfg, 'accumulate_grad_batches'):
+        accumulate_grad_batches = cfg.accumulate_grad_batches
+    else:
+        accumulate_grad_batches = None
     # assert accumulate_grad_batches == 4
     # trainer = pl.Trainer(
     #     log_every_n_steps=10,
@@ -212,16 +244,18 @@ if __name__ == '__main__':
         check_val_every_n_epoch=10,
         # check_val_every_n_epoch=args.eval_every_epoch,
         # resume_from_checkpoint=resume_ckpt,
-        # num_sanity_val_steps=0,
+        num_sanity_val_steps=0,
         accelerator="gpu",
         devices=ngpus,
-        # accumulate_grad_batches=accumulate_grad_batches,
+        accumulate_grad_batches=accumulate_grad_batches,
         # strategy='fsdp')
+        # num_nodes=2,
         strategy=strategy)
 
     model = PLModelWrapper(
         cfg)
-    wandb_logger.watch(model, log="all")
+    if wandb_logger is not None:
+        wandb_logger.watch(model, log="all")
 
     datamodule = PLDataModule(cfg)
-    trainer.fit(model=model, datamodule=datamodule)
+    trainer.fit(model=model, datamodule=datamodule, ckpt_path=checkpoint_path)

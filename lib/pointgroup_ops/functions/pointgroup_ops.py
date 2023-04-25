@@ -11,6 +11,7 @@ import PG_OP
 
 class HierarchicalAggregation(Function):
     @staticmethod
+    @torch.cuda.amp.custom_fwd(cast_inputs=torch.float32)
     def forward(ctx, semantic_label, coord_shift, ball_query_idxs, start_len, batch_idxs, training_mode, using_set_aggr):
         '''
         :param ctx:
@@ -77,6 +78,7 @@ class HierarchicalAggregation(Function):
 
 
     @staticmethod
+    @torch.cuda.amp.custom_bwd
     def backward(ctx, a=None):
         return None
 
@@ -85,6 +87,7 @@ hierarchical_aggregation = HierarchicalAggregation.apply
 
 class CalIoUAndMasklabel(Function):
     @staticmethod
+    @torch.cuda.amp.custom_fwd(cast_inputs=torch.float32)
     def forward(ctx, proposals_idx, proposals_offset, instance_labels, instance_pointnum, mask_scores_sigmoid, mode):
         '''
         :param ctx:
@@ -115,6 +118,7 @@ class CalIoUAndMasklabel(Function):
         return proposals_iou, mask_label
 
     @staticmethod
+    @torch.cuda.amp.custom_bwd
     def backward(ctx, a=None):
         return None, None, None, None
 
@@ -122,6 +126,7 @@ cal_iou_and_masklabel = CalIoUAndMasklabel.apply
 
 class Voxelization_Idx(Function):
     @staticmethod
+    @torch.cuda.amp.custom_fwd(cast_inputs=torch.float32)
     def forward(ctx, coords, batchsize, mode=4):
         '''
         :param ctx:
@@ -145,6 +150,7 @@ class Voxelization_Idx(Function):
 
 
     @staticmethod
+    @torch.cuda.amp.custom_bwd
     def backward(ctx, a=None, b=None, c=None):
         return None
 
@@ -153,6 +159,7 @@ voxelization_idx = Voxelization_Idx.apply
 
 class Voxelization(Function):
     @staticmethod
+    @torch.cuda.amp.custom_fwd(cast_inputs=torch.float32)
     def forward(ctx, feats, map_rule, mode=4):
         '''
         :param ctx:
@@ -175,6 +182,7 @@ class Voxelization(Function):
 
 
     @staticmethod
+    @torch.cuda.amp.custom_bwd
     def backward(ctx, d_output_feats):
         map_rule, mode, maxActive, N = ctx.for_backwards
         M, C = d_output_feats.size()
@@ -189,6 +197,7 @@ voxelization = Voxelization.apply
 
 class PointRecover(Function):
     @staticmethod
+    @torch.cuda.amp.custom_fwd(cast_inputs=torch.float32)
     def forward(ctx, feats, map_rule, nPoint):
         '''
         :param ctx:
@@ -211,6 +220,7 @@ class PointRecover(Function):
         return output_feats
 
     @staticmethod
+    @torch.cuda.amp.custom_bwd
     def backward(ctx, d_output_feats):
         map_rule, maxActive, M = ctx.for_backwards
         N, C = d_output_feats.size()
@@ -226,6 +236,7 @@ point_recover = PointRecover.apply
 
 class BallQueryBatchP(Function):
     @staticmethod
+    @torch.cuda.amp.custom_fwd(cast_inputs=torch.float32)
     def forward(ctx, coords, batch_idxs, batch_offsets, radius, meanActive):
         '''
         :param ctx:
@@ -256,6 +267,7 @@ class BallQueryBatchP(Function):
         return idx, start_len
 
     @staticmethod
+    @torch.cuda.amp.custom_bwd
     def backward(ctx, a=None, b=None):
         return None, None, None
 
@@ -264,6 +276,7 @@ ballquery_batch_p = BallQueryBatchP.apply
 
 class BFSCluster(Function):
     @staticmethod
+    @torch.cuda.amp.custom_fwd(cast_inputs=torch.float32)
     def forward(ctx, semantic_label, ball_query_idxs, start_len, threshold):
         '''
         :param ctx:
@@ -288,6 +301,7 @@ class BFSCluster(Function):
         return cluster_idxs, cluster_offsets
 
     @staticmethod
+    @torch.cuda.amp.custom_bwd
     def backward(ctx, a=None):
         return None
 
@@ -296,6 +310,7 @@ bfs_cluster = BFSCluster.apply
 
 class RoiPool(Function):
     @staticmethod
+    @torch.cuda.amp.custom_fwd(cast_inputs=torch.float32)
     def forward(ctx, feats, proposals_offset):
         '''
         :param ctx:
@@ -319,6 +334,7 @@ class RoiPool(Function):
         return output_feats
 
     @staticmethod
+    @torch.cuda.amp.custom_bwd
     def backward(ctx, d_output_feats):
         nProposal, C = d_output_feats.size()
 
@@ -335,6 +351,7 @@ roipool = RoiPool.apply
 
 class GetIoU(Function):
     @staticmethod
+    @torch.cuda.amp.custom_fwd(cast_inputs=torch.float32)
     def forward(ctx, proposals_idx, proposals_offset, instance_labels, instance_pointnum):
         '''
         :param ctx:
@@ -359,6 +376,7 @@ class GetIoU(Function):
         return proposals_iou
 
     @staticmethod
+    @torch.cuda.amp.custom_bwd
     def backward(ctx, a=None):
         return None, None, None, None
 
@@ -367,6 +385,7 @@ get_iou = GetIoU.apply
 
 class SecMean(Function):
     @staticmethod
+    @torch.cuda.amp.custom_fwd(cast_inputs=torch.float32)
     def forward(ctx, inp, offsets):
         '''
         :param ctx:
@@ -387,6 +406,7 @@ class SecMean(Function):
         return out
 
     @staticmethod
+    @torch.cuda.amp.custom_bwd
     def backward(ctx, a=None):
         return None, None
 
@@ -395,6 +415,7 @@ sec_mean = SecMean.apply
 
 class SecMin(Function):
     @staticmethod
+    @torch.cuda.amp.custom_fwd(cast_inputs=torch.float32)
     def forward(ctx, inp, offsets):
         '''
         :param ctx:
@@ -415,6 +436,7 @@ class SecMin(Function):
         return out
 
     @staticmethod
+    @torch.cuda.amp.custom_bwd
     def backward(ctx, a=None):
         return None, None
 
@@ -423,6 +445,7 @@ sec_min = SecMin.apply
 
 class SecMax(Function):
     @staticmethod
+    @torch.cuda.amp.custom_fwd(cast_inputs=torch.float32)
     def forward(ctx, inp, offsets):
         '''
         :param ctx:
@@ -443,6 +466,7 @@ class SecMax(Function):
         return out
 
     @staticmethod
+    @torch.cuda.amp.custom_bwd
     def backward(ctx, a=None):
         return None, None
 

@@ -1,4 +1,4 @@
-
+# %%
 import numpy as np
 import torch
 
@@ -127,3 +127,6 @@ class BBoxUtils(object):
         obb[3:6] = box_size
         obb[6] = heading_angle
         return obb
+# # %%
+# bbox = BBoxUtils()
+# %%

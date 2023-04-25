@@ -1,6 +1,8 @@
 # must import open3d before pytorch.
 import os
+import time
 import glob
+import re
 import sys
 import trimesh
 from util.icp import icp
@@ -253,7 +255,7 @@ class RfSNet(nn.Module):
             nn.LeakyReLU(0.01),
             nn.Linear(8*m, 16*m),
             nn.LeakyReLU(0.01),
-            nn.Linear(16*m, 56),
+            nn.Linear(16*m, self.num_cad_classes * 7),
         )
 
         #### init
@@ -274,7 +276,8 @@ class RfSNet(nn.Module):
 
         #### load pretrain weights
         if self.pretrain_path is not None and self.pretrain_path != 'None':
-            pretrain_dict = torch.load(self.pretrain_path)
+            pretrain_dict_ = torch.load(self.pretrain_path)
+            pretrain_dict = {re.sub('^model.', '', k): v for k, v in pretrain_dict_['state_dict'].items() if k.startswith('model')}
             for m in self.pretrain_module:
                 print("Loaded pretrained " + m + ": %d/%d" % utils.load_model_param(module_map[m], pretrain_dict, prefix=m))
         
@@ -323,7 +326,9 @@ class RfSNet(nn.Module):
         :param coords: (N, 3), float, cuda
         :return:
         '''
-        c_idxs = clusters_idx[:, 1].cuda().long()
+        device = feats.device
+        clusters_idx_gpu = clusters_idx.to(device, non_blocking=True).long()
+        c_idxs = clusters_idx_gpu[:, 1]
 
         clusters_points_feats = feats[c_idxs] # [sumNPoint, C]
         clusters_points_angles_label = angles[c_idxs, :12] # [sumNPoint, 12]
@@ -332,12 +337,13 @@ class RfSNet(nn.Module):
         clusters_points_semantics = semantics[c_idxs] # [sumNPoint, 8]
 
         # get the semantic label of each proposal
-        clusters_semantics = pointgroup_ops.sec_mean(clusters_points_semantics, clusters_offset.cuda()) # [nCluster, 8]
+        clusters_offset_gpu = clusters_offset.to(device, non_blocking=True)
+        clusters_semantics = pointgroup_ops.sec_mean(clusters_points_semantics, clusters_offset_gpu) # [nCluster, 8]
 
         # get mean angle as the bbox angle
         clusters_points_angles_label = torch.softmax(clusters_points_angles_label, dim=1)
-        clusters_angles_label_mean = pointgroup_ops.sec_mean(clusters_points_angles_label, clusters_offset.cuda())  # (nCluster, 12), float
-        clusters_angles_residual_mean = pointgroup_ops.sec_mean(clusters_points_angles_residual, clusters_offset.cuda())  # (nCluster, 12), float
+        clusters_angles_label_mean = pointgroup_ops.sec_mean(clusters_points_angles_label, clusters_offset_gpu)  # (nCluster, 12), float
+        clusters_angles_residual_mean = pointgroup_ops.sec_mean(clusters_points_angles_residual, clusters_offset_gpu)  # (nCluster, 12), float
 
         # decode angles
         clusters_angles_label_mean = torch.argmax(clusters_angles_label_mean, dim=1) # [nCluster, ] long
@@ -345,14 +351,14 @@ class RfSNet(nn.Module):
         # detach !!!
         clusters_angles = BBox.class2angle_cuda(clusters_angles_label_mean, clusters_angles_residual_mean).detach()
 
-        clusters_points_angles = torch.index_select(clusters_angles, 0, clusters_idx[:, 0].cuda().long())  # (sumNPoint,), float
+        clusters_points_angles = torch.index_select(clusters_angles, 0, clusters_idx_gpu[:, 0])  # (sumNPoint,), float
 
-        clusters_coords_min_ori = pointgroup_ops.sec_min(clusters_points_coords, clusters_offset.cuda())  # (nCluster, 3), float
-        clusters_coords_max_ori = pointgroup_ops.sec_max(clusters_points_coords, clusters_offset.cuda())  # (nCluster, 3), float
-        #clusters_coords_mean = pointgroup_ops.sec_mean(clusters_points_coords, clusters_offset.cuda())  # (nCluster, 3), float
+        clusters_coords_min_ori = pointgroup_ops.sec_min(clusters_points_coords, clusters_offset_gpu)  # (nCluster, 3), float
+        clusters_coords_max_ori = pointgroup_ops.sec_max(clusters_points_coords, clusters_offset_gpu)  # (nCluster, 3), float
+        #clusters_coords_mean = pointgroup_ops.sec_mean(clusters_points_coords, clusters_offset.to(device, non_blocking=True))  # (nCluster, 3), float
         clusters_centroid = (clusters_coords_max_ori + clusters_coords_min_ori) / 2 # (nCluster, 3), float
 
-        clusters_points_centroid = torch.index_select(clusters_centroid, 0, clusters_idx[:, 0].cuda().long())  # (sumNPoint, 3), float
+        clusters_points_centroid = torch.index_select(clusters_centroid, 0, clusters_idx_gpu[:, 0])  # (sumNPoint, 3), float
 
         
         # center coords
@@ -366,8 +372,8 @@ class RfSNet(nn.Module):
         # concat canonical coords
         clusters_points_feats = torch.cat([clusters_points_feats, clusters_points_coords], dim=1)
 
-        clusters_coords_min = pointgroup_ops.sec_min(clusters_points_coords, clusters_offset.cuda())  # (nCluster, 3), float
-        clusters_coords_max = pointgroup_ops.sec_max(clusters_points_coords, clusters_offset.cuda())  # (nCluster, 3), float
+        clusters_coords_min = pointgroup_ops.sec_min(clusters_points_coords, clusters_offset_gpu)  # (nCluster, 3), float
+        clusters_coords_max = pointgroup_ops.sec_max(clusters_points_coords, clusters_offset_gpu)  # (nCluster, 3), float
         clusters_bbox_size = clusters_coords_max - clusters_coords_min
 
         clusters_scale = 1 / (clusters_bbox_size / fullscale).max(1)[0]  # (nCluster), float
@@ -376,13 +382,13 @@ class RfSNet(nn.Module):
         min_xyz = clusters_coords_min * clusters_scale  # (nCluster, 3), float
         max_xyz = clusters_coords_max * clusters_scale
         
-        clusters_points_coords = clusters_points_coords * torch.index_select(clusters_scale, 0, clusters_idx[:, 0].cuda().long())
+        clusters_points_coords = clusters_points_coords * torch.index_select(clusters_scale, 0, clusters_idx_gpu[:, 0])
 
         range_xyz = max_xyz - min_xyz
         offset = - min_xyz
 
         
-        offset = torch.index_select(offset, 0, clusters_idx[:, 0].cuda().long())
+        offset = torch.index_select(offset, 0, clusters_idx_gpu[:, 0])
         clusters_points_coords += offset
 
         clusters_points_coords = clusters_points_coords.long()
@@ -393,10 +399,15 @@ class RfSNet(nn.Module):
         # input_map: sumNPoint int
         # output_map: M * (maxActive + 1) int
 
-        out_feats = pointgroup_ops.voxelization(clusters_points_feats, out_map.cuda(), mode)  # (M, C), float, cuda
+        out_feats = pointgroup_ops.voxelization(clusters_points_feats, out_map.to(device, non_blocking=True), mode)  # (M, C), float, cuda
 
         spatial_shape = [fullscale] * 3
-        voxelization_feats = spconv.SparseConvTensor(out_feats, out_coords.int().cuda(), spatial_shape, int(clusters_idx[-1, 0]) + 1)
+        # print('spatial_shape', spatial_shape)
+        # print('out_feats', out_feats.shape)
+        # print('out_coords', out_coords.shape)
+        # print('out_coords min max', out_coords.min(0), out_coords.max(0))
+        # print('batch size', int(clusters_idx[-1, 0]) + 1)
+        voxelization_feats = spconv.SparseConvTensor(out_feats, out_coords.int().to(device, non_blocking=True), spatial_shape, int(clusters_idx[-1, 0]) + 1)
 
         return voxelization_feats, inp_map, clusters_angles, clusters_centroid, clusters_bbox_size, clusters_semantics
 
@@ -414,6 +425,7 @@ class RfSNet(nn.Module):
         input = data['input']
         input_map = data['input_map']
         coords = data['coords']
+        device = coords.device
         batch_idxs = data['batch_idxs']
         #batch_offsets = data['batch_offsets']
         epoch = data['epoch']
@@ -429,7 +441,7 @@ class RfSNet(nn.Module):
         semantic_scores = self.linear(output_feats)   # (N, nClass), float
         semantic_preds = semantic_scores.max(1)[1]    # (N), long
 
-        semantic_preds_CAD = torch.from_numpy(RFS2CAD_arr[semantic_preds.cpu()]).long().cuda()
+        semantic_preds_CAD = torch.from_numpy(RFS2CAD_arr[semantic_preds.cpu()]).long().to(device, non_blocking=True)
         semantic_preds_CAD[semantic_preds_CAD == -1] = self.num_cad_classes
         semantic_scores_CAD = F.one_hot(semantic_preds_CAD, self.num_cad_classes + 1).float()
 
@@ -447,7 +459,7 @@ class RfSNet(nn.Module):
         pt_angles = self.angle_linear(pt_angles_feats) # (N, 24) float32
 
         ### mask non-CAD instances' pt_angles to 0.
-        angle_mask = (semantic_preds_CAD != self.num_cad_classes).to(semantic_preds.device).float()
+        angle_mask = (semantic_preds_CAD != self.num_cad_classes).to(device).float()
         pt_angles = pt_angles * angle_mask.unsqueeze(-1)
 
         ret['pt_angles'] = pt_angles
@@ -486,8 +498,8 @@ class RfSNet(nn.Module):
                 proposals_idx_shift[:, 0] += (proposals_offset.size(0) - 1)
                 proposals_offset_shift += proposals_offset[-1]
             
-                proposals_idx = torch.cat((proposals_idx, proposals_idx_shift), dim=0)#.long().cuda()
-                proposals_offset = torch.cat((proposals_offset, proposals_offset_shift[1:]), dim=0)#.cuda()
+                proposals_idx = torch.cat((proposals_idx, proposals_idx_shift), dim=0)#.long().to(device, non_blocking=True)
+                proposals_offset = torch.cat((proposals_offset, proposals_offset_shift[1:]), dim=0)#.to(device, non_blocking=True)
                 # why [1:]: offset is (0, c1, c2), offset_shift is (0, d1, d2) + c2, output is (0, c1, c2, c2+d1, c2+d2)
 
             # multi-scale proposal gen (naive, maskgroup)
@@ -533,7 +545,7 @@ class RfSNet(nn.Module):
             proposal_out = self.z_net(proposal_out)
             proposal_out = self.z_out(proposal_out)
             proposal_out = proposal_out.features[inp_map.long()] # (sumNPoint, C)
-            proposal_out = pointgroup_ops.roipool(proposal_out, proposals_offset.cuda())  # (nProposal, C) proposal-wise max_pooling
+            proposal_out = pointgroup_ops.roipool(proposal_out, proposals_offset.to(device, non_blocking=True))  # (nProposal, C) proposal-wise max_pooling
 
             # concat cell & semantics
             proposal_out = torch.cat([proposal_out, point_center, point_scale], dim=1)
@@ -547,9 +559,9 @@ class RfSNet(nn.Module):
                 proposal_zs = self.z_linear(proposal_out) # (nProposal, 256+...)
 
                 residual_bbox = self.z_box(proposal_out)
-                residual_center = residual_bbox[:, 0: 8*3]
-                residual_scale = residual_bbox[:, 8*3: 8*6]
-                residual_angle = residual_bbox[:, 8*6: 8*7]
+                residual_center = residual_bbox[:, 0: self.num_cad_classes*3]
+                residual_scale = residual_bbox[:, self.num_cad_classes*3: self.num_cad_classes*6]
+                residual_angle = residual_bbox[:, self.num_cad_classes*6: self.num_cad_classes*7]
 
                 ret['proposal_bbox'] = (proposal_zs, proposal_angle, point_center, point_scale, residual_center, residual_scale, residual_angle)
 
@@ -602,27 +614,30 @@ def nn_distance(pc1, pc2, l1smooth=False, delta=1.0, l1=False):
     dist2, idx2 = torch.min(pc_dist, dim=1) # (B,M)
     return dist1, idx1, dist2, idx2    
 
-def model_fn_decorator(cfg, test=False):
+def model_fn_decorator(cfg, test=False, device=None):
     #### config
     # from util.config import cfg
 
-    #### criterion
-    semantic_criterion = nn.CrossEntropyLoss(ignore_index=cfg.ignore_label).cuda()
-    score_criterion = nn.BCELoss(reduction='none').cuda()
-    label_criterion = nn.CrossEntropyLoss(reduction='none').cuda()
+    # #### criterion
+    # semantic_criterion = nn.CrossEntropyLoss(ignore_index=cfg.ignore_label).to(device)
+    # score_criterion = nn.BCEWithLogitsLoss(reduction='none').to(device)
+    # # score_criterion = nn.BCELoss(reduction='none').to(device, non_blocking=True)
+    # # label_criterion = nn.CrossEntropyLoss(reduction='none').to(device)
+    # label_criterion = nn.CrossEntropyLoss(reduction='none').to(device)
 
     def test_model_fn(batch, model, epoch):
         ### assert batch_size == 1
 
-        coords = batch['locs'].cuda()              # (N, 1 + 3), long, cuda, dimension 0 for batch_idx
-        voxel_coords = batch['voxel_locs'].cuda()  # (M, 1 + 3), long, cuda
-        p2v_map = batch['p2v_map'].cuda()          # (N), int, cuda
-        v2p_map = batch['v2p_map'].cuda()          # (M, 1 + maxActive), int, cuda
+        coords = batch['locs']#.to(device, non_blocking=True)              # (N, 1 + 3), long, cuda, dimension 0 for batch_idx
+        device = coords.device
+        voxel_coords = batch['voxel_locs']#.to(device, non_blocking=True)  # (M, 1 + 3), long, cuda
+        p2v_map = batch['p2v_map']#.to(device, non_blocking=True)          # (N), int, cuda
+        v2p_map = batch['v2p_map']#.to(device, non_blocking=True)          # (M, 1 + maxActive), int, cuda
 
-        coords_float = batch['locs_float'].cuda()  # (N, 3), float32, cuda
-        rgbs = batch['feats'].cuda()              # (N, C), float32, cuda
+        coords_float = batch['locs_float']#.to(device, non_blocking=True)  # (N, 3), float32, cuda
+        rgbs = batch['feats']#.to(device, non_blocking=True)              # (N, C), float32, cuda
 
-        batch_offsets = batch['offsets'].cuda()    # (B + 1), int, cuda
+        batch_offsets = batch['offsets']#.to(device, non_blocking=True)    # (B + 1), int, cuda
 
         spatial_shape = batch['spatial_shape']
 
@@ -663,7 +678,7 @@ def model_fn_decorator(cfg, test=False):
             scores_pred = torch.sigmoid(scores.view(-1))
 
             N = coords.shape[0]
-            proposals_pred = torch.zeros((proposals_offset.shape[0] - 1, N), dtype=torch.int, device=scores_pred.device) # (nProposal, N), int, cuda
+            proposals_pred = torch.zeros((proposals_offset.shape[0] - 1, N), dtype=torch.int, device=device) # (nProposal, N), int, cuda
             proposals_pred[proposals_idx[:, 0].long(), proposals_idx[:, 1].long()] = 1
 
             cluster_semantic_score = proposals_semantics
@@ -721,9 +736,9 @@ def model_fn_decorator(cfg, test=False):
                 cluster_angle = cluster_angle.detach().cpu().numpy() # [nProp, 3]
                 cluster_center = cluster_center.detach().cpu().numpy() # [nProp, 3]
                 cluster_scale = cluster_scale.detach().cpu().numpy() # [nProp, 3]
-                cluster_residual_center = cluster_residual_center.detach().cpu().numpy().reshape(n_clusters, 8, 3) # [nProp, 8, 3]
-                cluster_residual_scale = cluster_residual_scale.detach().cpu().numpy().reshape(n_clusters, 8, 3) # [nProp, 8, 3]
-                cluster_residual_angle = cluster_residual_angle.detach().cpu().numpy().reshape(n_clusters, 8) # [nProp, 8]
+                cluster_residual_center = cluster_residual_center.detach().cpu().numpy().reshape(n_clusters, cfg.num_cad_classes, 3) # [nProp, 8, 3]
+                cluster_residual_scale = cluster_residual_scale.detach().cpu().numpy().reshape(n_clusters, cfg.num_cad_classes, 3) # [nProp, 8, 3]
+                cluster_residual_angle = cluster_residual_angle.detach().cpu().numpy().reshape(n_clusters, cfg.num_cad_classes) # [nProp, 8]
 
                 cluster_bboxes = np.zeros((n_clusters, 7))
 
@@ -817,26 +832,26 @@ def model_fn_decorator(cfg, test=False):
         # 'locs_float': locs_float, 'feats': feats, 'labels': labels, 'instance_labels': instance_labels,
         # 'instance_info': instance_infos, 'instance_pointnum': instance_pointnum,
         # 'id': tbl, 'offsets': batch_offsets, 'spatial_shape': spatial_shape}
-        coords = batch['locs'].cuda()                          # (N, 1 + 3), long, cuda, dimension 0 for batch_idx
-        voxel_coords = batch['voxel_locs'].cuda()              # (M, 1 + 3), long, cuda
-        p2v_map = batch['p2v_map'].cuda()                      # (N), int, cuda
-        v2p_map = batch['v2p_map'].cuda()                      # (M, 1 + maxActive), int, cuda
+        coords = batch['locs']#.to(device, non_blocking=True)                          # (N, 1 + 3), long, cuda, dimension 0 for batch_idx
+        voxel_coords = batch['voxel_locs']#.to(device, non_blocking=True)              # (M, 1 + 3), long, cuda
+        p2v_map = batch['p2v_map']#.to(device, non_blocking=True)                      # (N), int, cuda
+        v2p_map = batch['v2p_map']#.to(device, non_blocking=True)                      # (M, 1 + maxActive), int, cuda
 
-        coords_float = batch['locs_float'].cuda()              # (N, 3), float32, cuda
-        rgbs = batch['feats'].cuda()                          # (N, C), float32, cuda
-        labels = batch['labels'].cuda()                        # (N), long, cuda
-        instance_labels = batch['instance_labels'].cuda()      # (N), long, cuda, 0~total_nInst, -100
+        coords_float = batch['locs_float']#.to(device, non_blocking=True)              # (N, 3), float32, cuda
+        rgbs = batch['feats']#.to(device, non_blocking=True)                          # (N, C), float32, cuda
+        labels = batch['labels']#.to(device, non_blocking=True)                        # (N), long, cuda
+        instance_labels = batch['instance_labels']#.to(device, non_blocking=True)      # (N), long, cuda, 0~total_nInst, -100
 
-        instance_info = batch['instance_info'].cuda()          # (N, 9), float32, cuda, (meanxyz, minxyz, maxxyz)
-        instance_pointnum = batch['instance_pointnum'].cuda()  # (total_nInst), int, cuda
+        instance_info = batch['instance_info']#.to(device, non_blocking=True)          # (N, 9), float32, cuda, (meanxyz, minxyz, maxxyz)
+        instance_pointnum = batch['instance_pointnum']#.to(device, non_blocking=True)  # (total_nInst), int, cuda
 
-        instance_zs = batch['instance_zs'].cuda()  # (total_nInst, 256), float, cuda
-        instance_zs_valid = batch['instance_zs_valid'].cuda()  # (total_nInst), int, cuda
+        instance_zs = batch['instance_zs'].to(device, non_blocking=True)  # (total_nInst, 256), float, cuda
+        instance_zs_valid = batch['instance_zs_valid']#.to(device, non_blocking=True)  # (total_nInst), int, cuda
         
-        instance_bbox_size = batch['instance_bbox_size'].cuda()
-        instance_bboxes = batch['instance_bboxes'].cuda()
+        instance_bbox_size = batch['instance_bbox_size']#.to(device, non_blocking=True)
+        instance_bboxes = batch['instance_bboxes']#.to(device, non_blocking=True)
 
-        batch_offsets = batch['offsets'].cuda()                # (B + 1), int, cuda
+        batch_offsets = batch['offsets']#.to(device, non_blocking=True)                # (B + 1), int, cuda
 
         spatial_shape = batch['spatial_shape']
 
@@ -919,7 +934,8 @@ def model_fn_decorator(cfg, test=False):
         # semantic_scores: (N, nClass), float32, cuda
         # semantic_labels: (N), long, cuda
 
-        semantic_loss = semantic_criterion(semantic_scores, semantic_labels)
+        semantic_loss = torch.nn.functional.cross_entropy(semantic_scores, semantic_labels, ignore_index=cfg.ignore_label)
+        # semantic_loss = semantic_criterion(semantic_scores, semantic_labels)
         loss_out['semantic_loss'] = (semantic_loss, semantic_scores.shape[0])
 
         '''offset loss'''
@@ -951,7 +967,8 @@ def model_fn_decorator(cfg, test=False):
         angle_label = pt_angles[:, :12]
         angle_residual = pt_angles[:, 12:]
 
-        angle_label_loss = label_criterion(angle_label, gt_angle_label)
+        # angle_label_loss = label_criterion(angle_label, gt_angle_label)
+        angle_label_loss = torch.nn.functional.cross_entropy(angle_label, gt_angle_label, reduction='none')
         angle_label_loss = (angle_label_loss * pt_valid).sum() / (pt_valid.sum() + 1e-6)
         if hasattr(cfg, 'angle_label_loss_weight'):
             angle_label_loss = cfg.angle_label_loss_weight * angle_label_loss
@@ -975,13 +992,16 @@ def model_fn_decorator(cfg, test=False):
             # pred_zs: (nProposal, 256)
 
             ### match GT by max IoU (point cloud)
-            ious = pointgroup_ops.get_iou(proposals_idx[:, 1].cuda(), proposals_offset.cuda(), instance_labels, instance_pointnum) # (nProposal, nInstance), float
+            device = scores.device
+            ious = pointgroup_ops.get_iou(proposals_idx[:, 1].to(device, non_blocking=True), proposals_offset.to(device, non_blocking=True), instance_labels, instance_pointnum) # (nProposal, nInstance), float
             gt_ious, gt_instance_idxs = ious.max(1)  # (nProposal) float, long
 
             # score loss
             gt_scores = get_segmented_scores(gt_ious, cfg.fg_thresh, cfg.bg_thresh) # [nProp]
 
-            score_loss = score_criterion(torch.sigmoid(scores.view(-1)), gt_scores).mean()
+            # score_loss = score_criterion(scores.view(-1), gt_scores).mean()
+            score_loss = torch.nn.functional.binary_cross_entropy_with_logits(scores.view(-1), gt_scores, reduction='none').mean()
+            # score_loss = score_criterion(torch.sigmoid(scores.view(-1)), gt_scores).mean()
             loss_out['score_loss'] = (score_loss, gt_ious.shape[0])
 
             if epoch > cfg.prepare_epochs_2:
@@ -993,8 +1013,15 @@ def model_fn_decorator(cfg, test=False):
                 gt_bboxes = instance_bboxes[gt_instance_idxs] # [nProp, 7], the original GT bbox.
                 gt_bbox_label = instance_bbox_size[gt_instance_idxs] # [nProp, ], the GT bbox label
 
-                pred_center = pred_center + torch.gather(pred_residual_center.view(-1, 8, 3), 1, gt_bbox_label.unsqueeze(-1).unsqueeze(-1).repeat(1,1,3)).squeeze(1) # [nProp, 3]
-                pred_scale = pred_scale + torch.gather(pred_residual_scale.view(-1, 8, 3), 1, gt_bbox_label.unsqueeze(-1).unsqueeze(-1).repeat(1,1,3)).squeeze(1) # [nProp, 3]
+                # print(pred_residual_center.shape, gt_bbox_label.shape, gt_bbox_label.min(), gt_bbox_label.max())
+                # print(pred_residual_center.view(-1, cfg.num_cad_classes, 3).shape, gt_bbox_label.unsqueeze(-1).unsqueeze(-1).repeat(1,1,3).shape)
+                # torch.cuda.synchronize()
+                # time.sleep(1)
+                # assert False
+                pred_center = pred_center + torch.gather(pred_residual_center.view(-1, cfg.num_cad_classes, 3), 1, gt_bbox_label.unsqueeze(-1).unsqueeze(-1).repeat(1,1,3)).squeeze(1) # [nProp, 3]
+                pred_scale = pred_scale + torch.gather(pred_residual_scale.view(-1, cfg.num_cad_classes, 3), 1, gt_bbox_label.unsqueeze(-1).unsqueeze(-1).repeat(1,1,3)).squeeze(1) # [nProp, 3]
+                # if gt_bbox_label.min() < 0 or gt_bbox_label.max() > len(CAD_weights) - 1:
+                #     raise ValueError('gt_bbox_label out of range', gt_bbox_label.min(), gt_bbox_label.max())
                 class_balance_weights = torch.from_numpy(CAD_weights[gt_bbox_label.detach().cpu().numpy()]).float().to(gt_bbox_label.device)
 
                 # z loss
