@@ -226,6 +226,7 @@ class CompNet(nn.Module):
     
         ### load gt zs and gt meshes.
         self.db = np.load(os.path.join(args.bsp_base, 'database_scannet.npz'))
+        # self.db = np.load(os.path.join(os.path.dirname(os.path.dirname(args.bsp_root)), 'database_scannet.npz'))
         # self.db = np.load(os.path.join('datasets/bsp/', 'database_scannet.npz'))
         self.shapenet_path = "datasets/ShapeNetv2_data/watertight_scaled_simplified/"
 
@@ -415,7 +416,7 @@ class CompNet(nn.Module):
             # loop each proposal and extract mesh (slow...)
             meshes = []
             for i in range(B):
-                
+                # print('AAAA', len(CAD_labels), labels[i].item(), feats.shape, i)
                 print(f"[BSP] generating mesh {i} / {B} | {CAD_labels[labels[i].item()]} | z = {(feats[i]).abs().mean()}")
 
                 if self.args.mesh_gen == 'mcubes':
@@ -441,6 +442,93 @@ class CompNet(nn.Module):
             res['meshes'] = np.array(meshes)
         
         return res
+
+    def voxels_to_mesh(self, voxels, bbox=None, threshold=0.5):
+        # voxels: [H, W, D]
+        # bbox: [6], min_xyz, max_xyz
+
+        # to numpy
+        if torch.is_tensor(voxels):
+            voxels = voxels.detach().cpu().numpy()
+        if bbox is not None and torch.is_tensor(bbox):
+            bbox = bbox.detach().cpu().numpy()
+        
+        # make sure that mesh is watertight (by padding non-occupied borders)
+        voxels_padded = np.pad(voxels, 1, 'constant', constant_values=-1e6) # logits, -1e6 --sigmoid--> 0
+
+        # mcubes assumes voxel values are on grid center, so no problem !
+        vertices, triangles = mcubes.marching_cubes(voxels_padded, threshold)
+
+        # undo padding
+        vertices -= 1 
+
+        # normalize to [-1, 1]
+        resolution = np.array(voxels.shape)
+        half_grid_length = 1 / resolution # [3]
+        vertices = (2 * vertices / (resolution - 1) - 1) * (1 - half_grid_length)
+
+        # fit back into world bbox if possible
+        if bbox is not None:
+            if bbox.shape[0] == 6:
+                min_xyz, max_xyz = bbox[:3], bbox[3:]
+                half_grid_length_input = 1 / np.array(self.args.voxel_resolution) # [3]
+                vertices = (vertices / (1 - half_grid_length_input) + 1) * (max_xyz - min_xyz + 1e-5) / 2 + min_xyz
+            elif bbox.shape[0] == 7:
+                center, bsize, orientation = bbox[:3], bbox[3:6], bbox[6]
+                vertices = (vertices / 2) * bsize
+                axis_rectified = np.array([[np.cos(orientation), np.sin(orientation), 0], [-np.sin(orientation), np.cos(orientation), 0], [0, 0, 1]])
+                vertices = vertices.dot(axis_rectified)
+                vertices = vertices + center
+
+
+        # create mesh
+        mesh = trimesh.Trimesh(vertices, triangles, vertex_normals=None, process=False)
+
+        return mesh
+
+
+
+    def implicit_to_voxels(self, planes, resolution_0=16, upsampling_steps=3, threshold=0):
+        # planes: [4, P], assert batch == 1
+        # resolution_0: for MISE, initial voxel res
+        # upsampling_steps: for MISE, upsampling ratio (2^x)
+        # threshold: for MISE, determine whether a voxel is occupied (active). should be 0 if we use logits.
+
+        # naive dense query
+        if upsampling_steps == 0:
+            points = make_coord([resolution_0]*3).to(planes.device) # [HWD, 3]        
+            
+            _, voxels = self.generator(points.unsqueeze(0), planes.unsqueeze(0), phase=self.phase)
+            voxels = voxels.view([resolution_0]*3) # [1, 1, N] --> [H, W, D]
+
+        # use MISE for sparse query, should be faster
+        else:
+            mise = MISE(resolution_0, upsampling_steps, threshold)
+            point_coords = mise.query() # [(H+1)^3, 3], mise assume values on grid corners, but we assume values on grid center.
+            
+            while point_coords.shape[0] != 0:
+
+                # normalize to [-1, 1]
+                half_grid_length = 1 / mise.resolution # [1], assume cubic
+
+                # for coords, (max_xyz - min_xyz) == (resolution - 1), e.g., [0, 1, 2, 3] --> mx - mn = 3, res = 4
+                points = (2 * point_coords / (mise.resolution - 1) - 1) * (1 - half_grid_length) # [0, H] in [-1, 1], [H+1] > 1
+
+                # to tensor
+                points = torch.FloatTensor(points).to(planes.device)
+                
+                # evaluate model and update
+                _, values = self.generator(points.unsqueeze(0), planes.unsqueeze(0), phase=self.phase)
+                values = values.view(-1)
+                values = values.detach().cpu().numpy().astype(np.float64)
+
+                mise.update(point_coords, values)
+                point_coords = mise.query()
+
+            voxels = mise.to_dense()[:-1, :-1, :-1] # [H+1, W+1, D+1] --> [H, W, D], grid corner --> grid center
+        
+        return voxels
+
     
     # query convexes, only support naive dense query
     def implicit_to_bsp(self, planes, resolution_0=64):

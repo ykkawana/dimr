@@ -42,7 +42,8 @@ else:
         'box',
         'background',
     ]
-    CAD_labels = RFS_labels[:1]
+    # CAD_labels = RFS_labels[:1]
+    CAD_labels = RFS_labels[:-1]
 
 # CAD_cnts = [555, 1093, 212, 113, 232, 260, 191, 121]
 CAD_cnts = [4370, 4243, 4218, 4379, 4504, 4336, 3941, 4396, 4460, 4229]
@@ -70,9 +71,12 @@ CADNotFly = list(range(len(CAD_labels)))
 
 offset = len(RFS_labels) - len(CAD_labels)
 if os.getenv("BG_FIRST", "0") == "1":
-    RFS2CAD = {i: i if i < len(CAD_labels) else -1 for i in range(len(RFS_labels))}
+    RFS2CAD = {i: (i - 1) if i > len(RFS_labels) else -1 for i in range(len(RFS_labels))}
 else:
-    RFS2CAD = {i: (i - 1) if len(RFS_labels) else -1 for i in range(len(RFS_labels))}
+    RFS2CAD = {i: i if i < len(CAD_labels) else -1 for i in range(len(RFS_labels))}
+    # RFS2CAD = {i: (i - 1) if len(RFS_labels) else -1 for i in range(len(RFS_labels))}
+print(RFS2CAD)
+
 RFS2CAD_arr = np.ones(30) * -1
 for k, v in RFS2CAD.items():
     RFS2CAD_arr[k] = v

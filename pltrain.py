@@ -1,4 +1,7 @@
 import os
+from typing import List, Union
+
+from pytorch_lightning.utilities.types import EPOCH_OUTPUT
 os.environ['OPENCV_IO_ENABLE_OPENEXR'] = "1"
 import pytorch_lightning as pl
 # import open3d as o3d
@@ -95,13 +98,15 @@ class PLModelWrapper(pl.LightningModule):
         # torch.cuda.empty_cache()
         return self._common_step(batch, batch_idx, "train")
 
-    # def training_epoch_end(self, train_step_outputs):
-    #     torch.cuda.empty_cache()
+    def training_epoch_end(self, train_step_outputs):
+        torch.cuda.empty_cache()
 
     def validation_step(self, batch, batch_idx):
+        # torch.cuda.empty_cache()
         self._common_step(batch, batch_idx, "val")
 
     def test_step(self, batch, batch_idx):
+        # torch.cuda.empty_cache()
         self._common_step(batch, batch_idx, "test")
 
 class PLDataModule(pl.LightningDataModule):
@@ -231,6 +236,7 @@ if __name__ == '__main__':
     #     gpus=ngpus,
     #     # strategy='fsdp')
     #     accelerator=strategy)
+    strategy = pl.strategies.DDPStrategy(process_group_backend="gloo")
     trainer = pl.Trainer(
         log_every_n_steps=10,
         logger=wandb_logger,
@@ -241,10 +247,10 @@ if __name__ == '__main__':
         callbacks=[latest_checkpoint, val_metric_checkpoint],
         max_epochs=cfg.epochs,
         # max_epochs=args.max_epoch,
-        check_val_every_n_epoch=10,
+        check_val_every_n_epoch=cfg.check_val_every_n_epoch,
         # check_val_every_n_epoch=args.eval_every_epoch,
         # resume_from_checkpoint=resume_ckpt,
-        num_sanity_val_steps=0,
+        num_sanity_val_steps=2,
         accelerator="gpu",
         devices=ngpus,
         accumulate_grad_batches=accumulate_grad_batches,

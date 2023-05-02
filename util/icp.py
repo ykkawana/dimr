@@ -66,17 +66,17 @@ def icp(a, b, c):
     trans_init = np.eye(4)
 	
     # vis
-    evaluation = o3d.registration.evaluate_registration(pa, pb, threshold, trans_init)
+    evaluation = o3d.pipelines.registration.evaluate_registration(pa, pb, threshold, trans_init)
     #print('[ICP before]', evaluation)
     #draw_registration_result(pa, pb, trans_init)
 
     # call icp
     #print("Apply point-to-point ICP")
-    reg = o3d.registration.registration_icp(
+    reg = o3d.pipelines.registration.registration_icp(
         pa, pb, threshold, trans_init,
-        o3d.registration.TransformationEstimationPointToPoint(),
+        o3d.pipelines.registration.TransformationEstimationPointToPoint(),
         #o3d.registration.TransformationEstimationPointToPlane(), # need normals
-        o3d.registration.ICPConvergenceCriteria(max_iteration=300))
+        o3d.pipelines.registration.ICPConvergenceCriteria(max_iteration=300))
 
     #print('[ICP after]', reg, reg.fitness)
 

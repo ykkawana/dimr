@@ -16,6 +16,7 @@ def get_parser(argv=None):
     parser.add_argument('--num_cad_classes', type=int, default=8, help='path to pretrain model')
     parser.add_argument('--apply_max_points_limit', type=bool, default=False, help='path to pretrain model')
     parser.add_argument('--accumulate_grad_batches', type=int, default=None)
+    parser.add_argument('--check_val_every_n_epoch', type=int, default=5, help='path to pretrain model')
 
     args_cfg = parser.parse_args(argv)
     assert args_cfg.config is not None or args_cfg.run_id is not None
@@ -44,6 +45,7 @@ def get_parser(argv=None):
         args_cfg.accumulate_grad_batches = None
 
 
+    # print(vars(args_cfg))
     return args_cfg
 
 

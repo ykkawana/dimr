@@ -282,7 +282,7 @@ class RfSNet(nn.Module):
                 print("Loaded pretrained " + m + ": %d/%d" % utils.load_model_param(module_map[m], pretrain_dict, prefix=m))
         
         ### BSP Net
-        bsp_base = os.path.dirname(os.path.dirname(cfg.bsp_root))
+        self.bsp_base = os.path.dirname(os.path.dirname(cfg.bsp_root))
         bsp_args = AttributeDict({
             'num_classes': self.num_cad_classes, 
             'mise_resolution_0': 32, # for evaluation
@@ -291,9 +291,10 @@ class RfSNet(nn.Module):
             'num_planes': 4096,
             'num_convexes': 256,
             'num_feats': 32,
+            # 'mesh_gen': 'mcubes', # 'bspt' or 'mcubes'
             'mesh_gen': 'bspt', # 'bspt' or 'mcubes'
             'sample': cfg.sample,
-            'bsp_base': bsp_base
+            'bsp_base': self.bsp_base
         })
         self.comp_net = CompNet(bsp_args)
 
@@ -302,11 +303,15 @@ class RfSNet(nn.Module):
             param.requires_grad = False
         
         ### load pretrained bsp net
-        bsp_pretrain_dict = torch.load(os.path.join('datasets/bsp', 'model.pth'))
-        wpath = sorted(glob.glob(os.path.join(bsp_base, 'checkpoints', '*.pth.tar')))[-1]
-        print('load', wpath)
-        bsp_pretrain_dict = torch.load(wpath)
-        self.comp_net.load_state_dict(bsp_pretrain_dict, strict=False)
+        # bsp_pretrain_dict = torch.load(os.path.join('datasets/bsp', 'model.pth'))
+        self.load_bsp_pretrain()
+
+    def load_bsp_pretrain(self):
+        wpath = sorted(glob.glob(os.path.join(self.bsp_base, 'checkpoints', '*_new.pth.tar')))[-1]
+        bsp_pretrain_dict = torch.load(wpath)['model']
+        bsp_pretrain_dict = {k: v for k, v in bsp_pretrain_dict.items() if not k.startswith('encoder.')}
+        self.comp_net.load_state_dict(bsp_pretrain_dict, strict=True)
+        # self.comp_net.load_state_dict(bsp_pretrain_dict, strict=False)
         print(f"Loaded pretrained BSP-Net: #params = {sum([p.numel() for p in self.comp_net.parameters()])}")
 
 
@@ -799,8 +804,15 @@ def model_fn_decorator(cfg, test=False, device=None):
 
                     target_pc = coords_float[clusters[cid].byte()].detach().cpu().numpy()
                     tmesh = mesh.to_trimesh() if isinstance(mesh, PolyMesh) else mesh
+                    # print(tmesh)
+                    # print(tmesh.vertices.shape)
+                    # print(tmesh.faces.shape)
 
                     # o3d ICP
+                    print(tmesh)
+                    if len(tmesh.vertices) < 4 or len(tmesh.faces) < 4:
+                        cluster_meshes[cid] = None
+                        continue
                     source_pc, _ = trimesh.sample.sample_surface_even(tmesh, 2048)
                     
                     transformed_vertices, fitness = icp(source_pc, target_pc, mesh.vertices)

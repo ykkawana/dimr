@@ -103,7 +103,8 @@ class Dataset:
         # logger.info('Validation samples: {}'.format(len(self.val_files)))
 
         self.val_set = list(range(len(self.val_files)))
-        self.val_data_loader = DataLoader(self.val_set, batch_size=self.batch_size, collate_fn=self.valMerge, num_workers=self.val_workers,
+        self.val_data_loader = DataLoader(self.val_set, batch_size=2, collate_fn=self.valMerge, num_workers=self.val_workers,
+        # self.val_data_loader = DataLoader(self.val_set, batch_size=self.batch_size, collate_fn=self.valMerge, num_workers=self.val_workers,
                                           shuffle=False, drop_last=False, pin_memory=True)
 
 
@@ -118,7 +119,8 @@ class Dataset:
 
         self.test_set = list(np.arange(len(self.test_files)))
 
-        self.test_data_loader = DataLoader(self.test_set, batch_size=self.batch_size, collate_fn=self.testMerge, num_workers=self.test_workers,
+        self.test_data_loader = DataLoader(self.test_set, batch_size=2, collate_fn=self.testMerge, num_workers=self.test_workers,
+        # self.test_data_loader = DataLoader(self.test_set, batch_size=self.batch_size, collate_fn=self.testMerge, num_workers=self.test_workers,
                                            shuffle=False, drop_last=False, pin_memory=True)
 
     #Elastic distortion
@@ -340,7 +342,8 @@ class Dataset:
             if len(point_cloud) > self.max_npoint and self.apply_max_points_limit:
                 choices = np.random.choice(point_cloud.shape[0], self.max_npoint, replace=False)
                 point_cloud = point_cloud[choices]
-            assert len(point_cloud) <= 250000
+            # assert len(point_cloud) == 125000, len(point_cloud)
+            assert len(point_cloud) <= 125000, len(point_cloud)
             # print(len(point_cloud))
 
             # point_cloud = scan_data['mesh_vertices'].astype(np.float32)
@@ -497,7 +500,7 @@ class Dataset:
             total_inst_num += inst_num
 
             ### get gt instance meshes
-            if split == 'test' and self.cfg.eval:
+            if split == 'test' and self.cfg.eval and False:
                 assert False
                 meshes = []
                 for mesh_id in range(len(inst_shapenet_catids)):
